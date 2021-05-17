@@ -94,14 +94,20 @@ class Sensors_Packet(object):
             self.packet['particles'][key].append(particles[key])
         self.pack_size += 1
         # Watch status and Memory Consumption as time goes on
-        print(raw_timestamp, '\t',gc.mem_free(), '\t',raw_gas,'\t',
-                temp_c*9/5+32,'\t',humidity,'\t',pressure,'\t', 
-                    particles["particles 03um"], 
-                    particles["particles 05um"], 
-                    particles["particles 10um"],
-                    particles["particles 25um"],
-                    particles["particles 50um"],
-                    particles["particles 100um"])
+        spacer = '    '
+        vals = [raw_timestamp,
+                gc.mem_free(),
+                raw_gas,
+                temp_c*9/5+32,
+                humidity,pressure, 
+                particles["particles 03um"], 
+                particles["particles 05um"], 
+                particles["particles 10um"],
+                particles["particles 25um"],
+                particles["particles 50um"],
+                particles["particles 100um"]]
+        vals = [str(x) for x in vals]
+        print(spacer.join(vals))
 
         return
     def prep_json(self):
