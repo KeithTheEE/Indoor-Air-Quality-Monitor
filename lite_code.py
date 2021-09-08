@@ -12,7 +12,7 @@ import socketpool
 
 
 # Default value in event server is offline
-bme280_sea_level_pressure = 1001.7
+bme280_sea_level_pressure = 1001.7 
 
 
 class Sensors_Packet(object):

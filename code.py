@@ -15,7 +15,7 @@ import socketpool
 
 # Sensor Imports
 import adafruit_sgp40
-import adafruit_bme280
+from adafruit_bme280 import basic as adafruit_bme280
 from adafruit_pm25.uart import PM25_UART
 
 
@@ -24,24 +24,61 @@ from adafruit_pm25.uart import PM25_UART
 #import test_the_wifi
 #time.sleep(1)
 
-# Start i2c bus and connect to sensors
-i2c = busio.I2C(board.SCL, board.SDA)
-sgp = adafruit_sgp40.SGP40(i2c)
-bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
 
 
-# Connect to a PM2.5 sensor over UART
-reset_pin = None
-uart = busio.UART(tx=board.IO5, rx=board.IO6, baudrate=9600)
-pm25 = PM25_UART(uart, reset_pin)
-
-# Default value in event server is offline
-bme280.sea_level_pressure = 1001.7
-
-
-import sgp40_VOC_algorithm # Dummy file to test VOC Algorithm port soon
+#import sgp40_VOC_algorithm # Dummy file to test VOC Algorithm port soon
 #print("Sleeping past the autoreload..")
 #time.sleep(300) 
+
+
+class Sensor(object):
+    def __init__(self):
+        self.is_connected = False
+        self._in_keys = None
+        pass
+
+    def set_input_keys(self, in_keys):
+        self._in_keys = in_keys
+    def set_update(self, update_function):
+        '''
+        Attach a 'update reading' function to this class
+        making the call to update convient 
+        '''
+        self._run_update = update_function
+        return
+    def set_null_state(self, null_readings):
+        '''
+        Set default returns if a sensor is having trouble 
+        replying for update, formatted according to
+        how the update formats a return key, value pair
+        '''
+        self._null_reading_value = null_readings
+
+    def update(self, *args, **kwargs):
+        '''
+        Talks to the sensor and returns the sensor readings
+        in a key value paired dictionary naming which sensor
+        values were read
+        '''
+        try:
+            results = self._run_update(self.sensor, *args, **kwargs)
+        except RuntimeError:
+            results = self._null_reading_value
+        return results
+
+class Sensor_Array(object):
+    def __init__(self, list_of_sensors=[]):
+        self.list_of_sensors = list_of_sensors
+    def update_sensors(self):
+        self.sensor_readings = {}
+
+        timestamp = time.time()
+        for sensor in self.list_of_sensors:
+            if sensor.is_connected:
+                key_args = {x:self.sensor_readings[x] for x in self.sensor_readings if x in sensor._input_keys}
+                sensor_values = sensor.update(sensor.sensor, **key_args)
+                self.sensor_readings.update(sensor_values)
+        return self.sensor_readings
 
 class Sensors_Packet(object):
     '''
@@ -53,60 +90,25 @@ class Sensors_Packet(object):
         results in fewer bytes needed 
     '''
     def __init__(self):
-        self.packet = {'raw_timestamp': [],
-                        'raw_gas': [], 
-                        'temp_c': [],
-                        'humidity': [],
-                        'pressure': [],
-                        'particles': {  "particles 03um": [], 
-                                        "particles 05um": [], 
-                                        "particles 100um": [], 
-                                        "particles 10um": [], 
-                                        "particles 25um": [], 
-                                        "particles 50um": [], 
-                                        "pm10 env": [], 
-                                        "pm10 standard": [], 
-                                        "pm100 env": [], 
-                                        "pm100 standard": [], 
-                                        "pm25 env": [], 
-                                        "pm25 standard": []}}
+        self.packet = {}
         self.pack_size = 0
-    def update(self, raw_timestamp, raw_gas, temp_c, humidity, pressure, particles):
-        self.packet['raw_timestamp'].append(raw_timestamp) 
-        self.packet['raw_gas'].append(raw_gas) 
-        self.packet['temp_c'].append(temp_c) 
-        self.packet['humidity'].append(humidity) 
-        self.packet['pressure'].append(pressure) 
-        for key in particles:
-            self.packet['particles'][key].append(particles[key])
+    def update(self, sensor_readings):
+        for key in sensor_readings:
+            if key in self.packet:
+                self.packet[key].append(sensor_readings[key])
+            else:
+                self.packet[key] = [sensor_readings[key]]
+                
         self.pack_size += 1
-    def print_and_update(self, raw_timestamp, raw_gas, temp_c, humidity, pressure, particles):
+    def print_and_update(self, sensor_readings):
         '''
         Appends all of the input values to the packet dictionary then prints
         out the latest values
         '''
-        self.packet['raw_timestamp'].append(raw_timestamp) 
-        self.packet['raw_gas'].append(raw_gas) 
-        self.packet['temp_c'].append(temp_c) 
-        self.packet['humidity'].append(humidity) 
-        self.packet['pressure'].append(pressure) 
-        for key in particles:
-            self.packet['particles'][key].append(particles[key])
-        self.pack_size += 1
+        self.update(sensor_readings)
         # Watch status and Memory Consumption as time goes on
         spacer = '    '
-        vals = [raw_timestamp,
-                gc.mem_free(),
-                raw_gas,
-                temp_c*9/5+32,
-                humidity,pressure, 
-                particles["particles 03um"], 
-                particles["particles 05um"], 
-                particles["particles 10um"],
-                particles["particles 25um"],
-                particles["particles 50um"],
-                particles["particles 100um"]]
-        vals = [str(x) for x in vals]
+        vals = [str(x) for x in sensor_readings.values()]
         print(spacer.join(vals))
 
         return
@@ -279,8 +281,6 @@ class Current_Web_Status(object):
         return
 
 
-
-
 def set_bme280_sea_level_pressure(bme280, my_network):
     # Grab up to date pressure at sealevel
     sea_level = my_network.get_sea_level()
@@ -289,7 +289,72 @@ def set_bme280_sea_level_pressure(bme280, my_network):
     return bme280
 
 
-def read_pm25_safely(pm25):
+
+
+# Start i2c and UART bus and ADC and connect to sensors
+i2c = busio.I2C(board.SCL, board.SDA)
+uart = busio.UART(tx=board.IO5, rx=board.IO6, baudrate=9600)
+
+## Start up and initalize sensors
+
+
+# BME280
+def read_bme(bme_sensor):
+    results = {}
+    results['pressure'] = bme_sensor.pressure
+    results['humidity'] = bme_sensor.relative_humidity
+    results['temp_c'] = bme_sensor.temperature
+    return results
+
+bme280 = Sensor()
+bme280.set_null_state(null_readings={'temp_c':-40, 
+                          'humidity':-1,
+                          'pressure':-1})
+bme280.set_update(read_bme)
+try: 
+    bme280.sensor = adafruit_bme280.Adafruit_BME280_I2C(i2c)
+    bme280.is_connected = True
+    # Default value in event server is offline
+    bme280.sensor.sea_level_pressure = 1001.7
+except RuntimeError:
+    print("BME 280 Sensor not found")
+    pass
+
+
+
+#bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c)
+def read_sgp40(sgp40_sensor, temp_c, humidity):
+    results = {}
+    raw_value = sgp40_sensor.measure_raw(temp_c, humidity)
+    raw = sgp40_sensor.measure_raw(temp_c, humidity)
+    results['sgp40_raw'] = raw
+    if raw < 0:
+        voc_index = -1
+    else:
+        voc_index = sgp40_sensor._voc_algorithm.vocalgorithm_process(raw)
+    results['voc_index'] = voc_index
+    return results
+
+sgp40 = Sensor()
+sgp40.set_null_state(null_readings={'sgp40_raw':-1, 
+                          'voc_index':-1})
+sgp40.set_update(read_sgp40)
+sgp40.set_input_keys(['temp_c', 'humidity'])
+try:
+    sgp40.sensor = adafruit_sgp40.SGP40(i2c)
+    sgp40.sensor._voc_algorithm = adafruit_sgp40.VOCAlgorithm()
+    sgp40.sensor._voc_algorithm.vocalgorithm_init()
+    sgp40.is_connected = True
+except RuntimeError:
+    print("SGP40 Sensor not found")
+    pass
+
+#sgp = adafruit_sgp40.SGP40(i2c)
+
+
+# Connect to a PM2.5 sensor over UART
+
+def read_pm25(pm25_sensor):
     read_tries = 0
     read_attempt_limit = 5
 
@@ -302,20 +367,31 @@ def read_pm25_safely(pm25):
             read_tries += 1
             time.sleep(0.1)
     if read_tries >= read_attempt_limit:
-        # Generate Fake particles
-        particles  = {"particles 03um": -1, 
+        raise RuntimeError
+    return particles
+reset_pin = None
+pm25 = Sensor()
+pm25.set_null_state(null_readings={"particles 03um": -1, 
                       "particles 05um": -1, 
                       "particles 100um": -1, 
                       "particles 10um": -1, 
-                      "particles 25um": -17, 
-                      "particles 50um": -10, 
+                      "particles 25um": -1, 
+                      "particles 50um": -1, 
                       "pm10 env": -1, 
-                      "pm10 standard": 5, 
+                      "pm10 standard": -1, 
                       "pm100 env": -1, 
-                      "pm100 standard": 11, 
+                      "pm100 standard": -1, 
                       "pm25 env": -1, 
-                      "pm25 standard": 11}
-    return particles
+                      "pm25 standard": -1})
+pm25.set_update(read_pm25)
+pm25.set_is_connected(PM25_UART, uart, reset_pin)
+try:
+    pm25.sensor = PM25_UART(uart, reset_pin)
+    pm25.is_connected = True
+except RuntimeError:
+    print("Pm2.5 Sensor Not Found")
+
+
 
 
 
@@ -327,22 +403,20 @@ my_network.start_sessions_pool()
 
 
 
-bme280 = set_bme280_sea_level_pressure(bme280, my_network)
-print("Altitude = %0.2f meters" % bme280.altitude) # Home Altitude is about 270-264 meters
-header_string = "Time\t\t Free Memory\t RAWGAS\t Temp\t\t Humidity\t Pressure"
-print(header_string) 
+# bme280 = set_bme280_sea_level_pressure(bme280, my_network)
+# print("Altitude = %0.2f meters" % bme280.altitude) # Home Altitude is about 270-264 meters
+# header_string = "Time\t\t Free Memory\t RAWGAS\t Temp\t\t Humidity\t Pressure"
+# print(header_string) 
+
 
 
 i = 0
+connected_sensors = Sensor_Array([bme280, sgp40, pm25])
 sensor_pack = Sensors_Packet()
-packet_size_limit = 100
+packet_size_limit = 25
 start_time = time.time()
 
 while True:
-    i += 1
-    if i > 50:
-        i = 0
-        #print(header_string)
     if sensor_pack.pack_size >= packet_size_limit:
         my_network.post_sensor_packet(sensor_pack)
         # try:
@@ -352,8 +426,7 @@ while True:
         #     print("Continuing..")
         sensor_pack = Sensors_Packet()
     
-    particles = read_pm25_safely(pm25)
-            
-    sensor_pack.print_and_update(time.time(), sgp.raw,bme280.temperature,bme280.relative_humidity,bme280.pressure, particles)
+    sensor_readings = connected_sensors.update_sensors()          
+    sensor_pack.print_and_update(time.time(),**sensor_readings)
 
     time.sleep(1) 
