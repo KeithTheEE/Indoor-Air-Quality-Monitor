@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Unlicense
 
 secrets.py
+*tar.xz
 *.mpy
 .idea
 __pycache__
