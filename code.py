@@ -11,7 +11,7 @@ import ipaddress
 import ssl
 import wifi
 import socketpool
-import adafruit_datetime
+import neopixel
 
 
 # Sensor Imports
@@ -22,7 +22,11 @@ from adafruit_pm25.uart import PM25_UART
 import adafruit_scd4x
 
 
+pixels = neopixel.NeoPixel(board.ne, 1, brightness=0.3)
+pixels.direction = digitalio.Direction.OUTPUT
 
+pixels[0] = (180, 0, 255)
+pixels.show()
 
 #import test_the_wifi
 #time.sleep(1)
@@ -308,6 +312,8 @@ class Current_Web_Status(object):
             try:
                 response = self.https.post(post_sensor_webpage, json=packet_json) 
                 success = True
+                pixels[0]=(0,0,0)
+                pixels.show()
                 try: 
                     self._close_request_socket(response)
                 except Exception as e:
@@ -329,6 +335,10 @@ class Current_Web_Status(object):
 
             if run_count == run_limit:
                 self.homeserver_is_online = False
+            
+            if not success:
+                pixels[0]=(100,0,0)
+                pixels.show()
 
         return success
 
@@ -494,6 +504,9 @@ packet_size_limit = 20
 start_time = time.time()
 
 packets_to_post = []
+
+pixels[0] = (0,0,0)
+pixels.show()
 
 while True:
     start_time = time.monotonic_ns() / 10**9
