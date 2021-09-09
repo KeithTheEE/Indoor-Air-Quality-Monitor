@@ -11,6 +11,7 @@ import ipaddress
 import ssl
 import wifi
 import socketpool
+import adafruit_datetime
 
 
 # Sensor Imports
@@ -18,6 +19,7 @@ import adafruit_sgp40
 from adafruit_sgp40 import voc_algorithm
 from adafruit_bme280 import basic as adafruit_bme280
 from adafruit_pm25.uart import PM25_UART
+import adafruit_scd4x
 
 
 
@@ -292,33 +294,37 @@ class Current_Web_Status(object):
             
         
         # Go to server
+        success = False
         if self.connected_to_network: 
             
             run_count = 0
             run_limit = 500 
-            while run_count < run_limit:
-                try:
-                    response = self.https.post(post_sensor_webpage, json=packet_json) 
-                    break
-                except RuntimeError as e:
-                    run_count += 1
-                    print("> Runtime Error Caught", e)
-                except OSError as e:
-                    self.connected_to_network = False
-                    print("> Os Error Caught", e)
-                except OutOfRetries as e:
-                    print(">Outofretries>", e)
-                    time.sleep(2)
+            try:
+                response = self.https.post(post_sensor_webpage, json=packet_json) 
+                success = True
+                try: 
+                    self._close_request_socket(response)
+                except Exception as e:
+                    print("During closing of socket, error occured", e)
+            except RuntimeError as e:
+                # Reasons
+                # Server may be down
+                run_count += 1
+                print("> Runtime Error Caught", e)
+                success = False
+            except OSError as e:
+                self.connected_to_network = False
+                print("> Os Error Caught", e)
+                success = False
+            except OutOfRetries as e:
+                print(">Outofretries>", e)
+                success = False
 
 
             if run_count == run_limit:
                 self.homeserver_is_online = False
 
-            try: 
-                self._close_request_socket(response)
-            except Exception as e:
-                print(e)
-        return
+        return success
 
 
 def set_bme280_sea_level_pressure(bme280, my_network):
@@ -356,7 +362,7 @@ try:
     bme280.is_connected = True
     # Default value in event server is offline
     bme280.sensor.sea_level_pressure = 1001.7
-except RuntimeError:
+except ValueError:
     print("BME 280 Sensor not found")
     pass
 
@@ -388,7 +394,7 @@ try:
     sgp40.sensor._voc_algorithm.vocalgorithm_init()
     print("Made it")
     sgp40.is_connected = True
-except RuntimeError:
+except ValueError:
     print("SGP40 Sensor not found")
     pass
 
@@ -433,6 +439,29 @@ try:
 except RuntimeError:
     print("Pm2.5 Sensor Not Found")
 
+#scd4x Sensor
+def read_scd4x(scd4x_sensor):
+    results = {}
+    if scd4x_sensor.data_ready:
+        results['CO2'] = scd4x_sensor.CO2
+        results['SCD4X_temp'] = scd4x_sensor.temperature
+        results['SCD4x_humidity'] = scd4x_sensor.relative_humidity
+    else:
+        # sensor's not ready
+        raise RuntimeError
+    return results
+scd4x = Sensor("SCD4x")
+scd4x.set_null_state(null_readings={'CO2':-1,
+                        "SCD4X_temp":-40,
+                        "SCD4x_humidity":-1})
+scd4x.set_update(read_scd4x)
+try:
+    scd4x = adafruit_scd4x.SCD4X(i2c)
+    scd4x.start_periodic_measurement()
+    scd4x.is_connected = True
+except ValueError:
+    print("SCD4X Sensor Not Found")
+
 
 
 
@@ -453,25 +482,37 @@ my_network.start_sessions_pool()
 
 
 i = 0
-connected_sensors = Sensor_Array([bme280, sgp40, pm25])
+connected_sensors = Sensor_Array([bme280, sgp40, pm25, scd4x])
 sensor_pack = Sensors_Packet()
 packet_size_limit = 25
 start_time = time.time()
 
+packets_to_post = []
+
 while True:
-    start_time = time.time()
-    if sensor_pack.pack_size >= packet_size_limit:
-        my_network.post_sensor_packet(sensor_pack)
-        # try:
-        #     my_network.post_sensor_packet(sensor_pack)
-        # except Exception as e:
-        #     print(e)
-        #     print("Continuing..")
-        sensor_pack = Sensors_Packet()
+    start_time = time.monotonic_ns() / 10**9
     
+    # Read sensors
     sensor_readings = connected_sensors.update_sensors()          
     sensor_pack.print_and_update_limited(sensor_readings)
 
-    sleep_time = min(1, max(0, 1-(time.time()-start_time)))
+    # Sensor pack is at size, add it to the the list of packs to post
+    # and generate a new one
+    if sensor_pack.pack_size >= packet_size_limit:
+        packets_to_post.append(sensor_pack)
+        sensor_pack = Sensors_Packet()
+    # there's a pack to post, let's post it
+    if len(packets_to_post) > 0:
+        success = my_network.post_sensor_packet(packets_to_post[0])
+        if success:
+            packets_to_post = packets_to_post[1:] 
+    # there's too many packs, let's just drop one for ram
+    if len(packets_to_post) > 10:
+        packets_to_post[1:]
+            
+
+    # Sleep between no and 1 second adjusted for the time of the sensor reads
+    sleep_time = min(1, max(0, 1-((time.monotonic_ns() / 10**9)-start_time)))
+    #print("SLeeping", sleep_time)
     if sleep_time > 0:
         time.sleep(sleep_time)  
