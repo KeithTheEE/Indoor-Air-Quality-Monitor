@@ -133,7 +133,7 @@ class Sensors_Packet(object):
         self.update(sensor_readings)
         # Watch status and Memory Consumption as time goes on
         spacer = '    '
-        msg = str(sensor_readings['raw_timestamp'])+spacer
+        msg = str(sensor_readings['raw_timestamp'])+spacer+str(gc.mem_free())+spacer
         if 'temp_c' in sensor_readings:
             msg += str(sensor_readings['temp_c']*9/5+32) + spacer
         if 'humidity' in sensor_readings: 
@@ -150,6 +150,12 @@ class Sensors_Packet(object):
             msg += str(sensor_readings['particles 05um']) + spacer
         if 'particles 10um' in sensor_readings:
             msg += str(sensor_readings['particles 10um']) + spacer
+        if 'CO2' in sensor_readings:
+            msg += str(sensor_readings['CO2']) + spacer
+        if 'SCD4X_temp' in sensor_readings:
+            msg += str(sensor_readings['SCD4X_temp']) + spacer
+        if 'SCD4x_humidity' in sensor_readings:
+            msg += str(sensor_readings['SCD4x_humidity']) + spacer
         #vals = [str(x) for x in sensor_readings.values()]
         print(msg)
 
@@ -456,8 +462,8 @@ scd4x.set_null_state(null_readings={'CO2':-1,
                         "SCD4x_humidity":-1})
 scd4x.set_update(read_scd4x)
 try:
-    scd4x = adafruit_scd4x.SCD4X(i2c)
-    scd4x.start_periodic_measurement()
+    scd4x.sensor = adafruit_scd4x.SCD4X(i2c)
+    scd4x.sensor.start_periodic_measurement()
     scd4x.is_connected = True
 except ValueError:
     print("SCD4X Sensor Not Found")
@@ -484,7 +490,7 @@ my_network.start_sessions_pool()
 i = 0
 connected_sensors = Sensor_Array([bme280, sgp40, pm25, scd4x])
 sensor_pack = Sensors_Packet()
-packet_size_limit = 25
+packet_size_limit = 20
 start_time = time.time()
 
 packets_to_post = []
